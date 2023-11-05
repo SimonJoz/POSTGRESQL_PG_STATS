@@ -5,7 +5,52 @@
 This README.md file provides a collection of SQL queries for PostgreSQL database administrators to monitor and maintain
 their databases. It includes queries for retrieving table indexes, partitions, and various data integrity checks.
 
-[TOC]
+# Table of Contents
+
+- [Basics](#basics)
+    - [Get indexes of tables](#get-indexes-of-tables)
+    - [Get partitions of tables](#get-partitions-of-tables)
+- [Data Integrity](#data-integrity)
+    - [Cache Hit Ratio](#cache-hit-ratio)
+    - [Anomalies](#anomalies)
+    - [Database Sizes](#database-sizes)
+    - [Schemas size](#schemas-size)
+    - [Table Sizes](#table-sizes)
+    - [Another Table Sizes Query](#another-table-sizes-query)
+    - [Unused Indexes](#unused-indexes)
+    - [Write Activity(index usage)](#write-activityindex-usage)
+    - [Does table needs an Index](#does-table-needs-an-index)
+    - [Index % usage](#index--usage)
+    - [How many indexes are in cache](#how-many-indexes-are-in-cache)
+    - [Dirty Pages](#dirty-pages)
+    - [Sequential Scans](#sequential-scans)
+    - [Checkpoints](#checkpoints)
+- [Activity](#activity)
+    - [Show running queries](#show-running-queries)
+    - [Kill running query](#kill-running-query)
+    - [Kill idle query](#kill-idle-query)
+    - [Check locks](#check-locks)
+    - [Get Running Queries (And Lock statuses)](#get-running-queries-and-lock-statuses)
+    - [Most CPU intensive queries (PGSQL v9.4)](#most-cpu-intensive-queries-pgsql-v94)
+    - [Most time consuming queries (PGSQL v9.4)](#most-time-consuming-queries-pgsql-v94)
+    - [Maximum transaction age](#maximum-transaction-age)
+    - [Bad xacts](#bad-xacts)
+    - [Waiting Clients](#waiting-clients)
+    - [Waiting Connections for a lock](#waiting-connections-for-a-lock)
+    - [Connections](#connections)
+    - [User Connections Ratio](#user-connections-ratio)
+    - [Average Statement Exec Time](#average-statement-exec-time)
+    - [Most writing (to shared_buffers) queries](#most-writing-to-shared_buffers-queries)
+    - [Block Read Time](#block-read-time)
+- [Vacuuming](#vacuuming)
+    - [Vacuum Command](#vacuum-command)
+    - [Auto vacuum](#auto-vacuum)
+    - [Last Vacuum and Analyze time](#last-vacuum-and-analyze-time)
+    - [Total number of dead tuples need to be vacuumed per table](#total-number-of-dead-tuples-need-to-be-vacuumed-per-table)
+    - [Total number of dead tuples need to be vacuumed in DB](#total-number-of-dead-tuples-need-to-be-vacuumed-in-db)
+    - [Show Table Bloats](#show-table-bloats)
+
+
 
 # Basics
 
