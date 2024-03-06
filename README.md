@@ -118,14 +118,15 @@ from pg_stat_database;
 - temp_files and temp_bytes watch out for them
 
 ````postgresql
-select datname,
-       (xact_commit100) / nullif(xact_commit + xact_rollback, 0)   as c_commit_ratio,
-       (xact_rollback100) / nullif(xact_commit + xact_rollback, 0) as c_rollback_ratio,
+SELECT datname,
+       (xact_commit * 100) / nullif(xact_commit + xact_rollback, 0)   AS c_commit_ratio,
+       (xact_rollback * 100) / nullif(xact_commit + xact_rollback, 0) AS c_rollback_ratio,
        deadlocks,
        conflicts,
        temp_files,
        pg_size_pretty(temp_bytes)
-from pg_stat_database;
+FROM pg_stat_database;
+
 ````
 
 #### Database Sizes
@@ -242,7 +243,8 @@ FROM pg_statio_user_indexes;
 
 #### Dirty Pages
 
-- maxwritten_clean and buffers_backend_fsyn better be = 0
+--  maxwritten_clean should be low - indicate that the background writer is keeping up with the cleaning process
+--  buffers_backend_fsyn should be = 0
 
 ````postgresql
 select buffers_clean, maxwritten_clean, buffers_backend_fsync
@@ -254,15 +256,15 @@ from pg_stat_bgwriter;
 - seq_tup_avg should be < 1000
 
 ````postgresql
-select relname,
-       pg_size_pretty(pg_relation_size(relname::regclass)) as size,
+SELECT relname,
+       pg_size_pretty(pg_total_relation_size(schemaname || '.' || relname)) AS size,
        seq_scan,
        seq_tup_read,
-       seq_scan / seq_tup_read                             as seq_tup_avg
-from pg_stat_user_tables
-where seq_tup_read > 0
-order by 3, 4 desc
-limit 5;
+       seq_scan / NULLIF(seq_tup_read, 0) AS seq_tup_avg
+FROM pg_stat_user_tables
+WHERE seq_tup_read > 0
+ORDER BY 3, 4 DESC
+LIMIT 5;
 ````
 
 #### Checkpoints
@@ -377,12 +379,12 @@ LIMIT 20;
 #### Most time consuming queries (PGSQL v9.4)
 
 ```postgresql
-SELECT substring(query, 1, 100)                                                 AS short_query,
-       round(total_time::numeric, 2)                                            AS total_time,
+SELECT substring(query, 1, 100)                                                           AS short_query,
+       make_interval(secs => total_exec_time / 1000000)                                   AS total_time,
        calls,
        rows,
-       round(total_time::numeric / calls, 2)                                    AS avg_time,
-       round((100 * total_time / sum(total_time::numeric) OVER ())::numeric, 2) AS percentage_cpu
+       round(total_exec_time::numeric / calls, 2)                                         AS avg_time,
+       round((100 * total_exec_time / sum(total_exec_time::numeric) OVER ())::numeric, 2) AS percentage_cpu
 FROM pg_stat_statements
 ORDER BY avg_time DESC
 LIMIT 20;
@@ -470,7 +472,29 @@ where blk_read_time <> 0
 order by blk_read_time desc;
 ```
 
+```postgresql
+SELECT query,
+       (blk_read_time || ' milliseconds')::interval  AS read_time,
+       (blk_write_time || ' milliseconds')::interval AS write_time,
+       calls,
+       rows
+FROM pg_stat_statements
+WHERE blk_read_time <> 0
+  AND query like '%'
+ORDER BY blk_read_time DESC;
+```
+
 ---------------
+
+# Vacuum Analyse check
+
+```postgresql
+SELECT schemaname, relname, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+FROM pg_stat_user_tables
+where last_analyze is not null
+or last_autoanalyze is not null
+order by schemaname, relname;
+```
 
 # Vacuuming
 
