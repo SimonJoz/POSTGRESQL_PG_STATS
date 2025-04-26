@@ -50,34 +50,64 @@ their databases. It includes queries for retrieving table indexes, partitions, a
     - [Total number of dead tuples need to be vacuumed in DB](#total-number-of-dead-tuples-need-to-be-vacuumed-in-db)
     - [Show Table Bloats](#show-table-bloats)
 
-
-
 # Basics
 
 ------------
 
-## Get indexes of tables
+## List partitioned tables
 
 ```postgresql
+SELECT relnamespace::regnamespace::text schema_name, oid::regclass::text table_name
+FROM pg_class
+WHERE relkind = 'p'
+  AND oid IN (SELECT DISTINCT inhparent FROM pg_inherits)
+ORDER BY schema_name, table_name;
+```
 
-select t.relname                  as table_name,
-       i.relname                  as index_name,
-       string_agg(a.attname, ',') as column_name
-from pg_class t,
+## Schemas size
+
+```postgresql
+SELECT schema_name,
+       pg_size_pretty(sum(table_size)),
+       (sum(table_size) / database_size) * 100 percent
+FROM (SELECT pg_catalog.pg_namespace.nspname                        as schema_name,
+             pg_relation_size(pg_catalog.pg_class.oid)              as table_size,
+             sum(pg_relation_size(pg_catalog.pg_class.oid)) over () as database_size
+      FROM pg_catalog.pg_class
+               JOIN pg_catalog.pg_namespace ON relnamespace = pg_catalog.pg_namespace.oid) t
+GROUP BY schema_name, database_size
+```
+
+## Tables within schema size
+
+```postgresql
+SELECT table_schema || '.' || table_name                                         relname,
+       pg_size_pretty(pg_relation_size(table_schema || '.' || table_name))       excluding_toast_size,
+       pg_size_pretty(pg_total_relation_size(table_schema || '.' || table_name)) including_toast_size
+FROM information_schema.tables
+WHERE table_schema = 'archive'
+  AND table_type = 'BASE TABLE'
+ORDER BY pg_relation_size(table_schema || '.' || table_name)
+```
+
+```postgresql
+SELECT t.relname                  AS table_name,
+       i.relname                  AS index_name,
+       string_agg(a.attname, ',') AS column_name
+FROM pg_class t,
      pg_class i,
      pg_index ix,
      pg_attribute a
-where t.oid = ix.indrelid
-  and i.oid = ix.indexrelid
-  and a.attrelid = t.oid
-  and a.attnum = ANY (ix.indkey)
-  and t.relkind = 'r'
-  and t.relname not like 'pg_%'
-group by t.relname,
+WHERE t.oid = ix.indrelid
+  AND i.oid = ix.indexrelid
+  AND a.attrelid = t.oid
+  AND a.attnum = ANY (ix.indkey)
+  AND t.relkind = 'r'
+  AND t.relname NOT LIKE 'pg_%'
+GROUP BY t.relname,
          i.relname
-order by t.relname,
+ORDER BY t.relname,
          i.relname;
-
 ```
 
 ## Get partitions of tables
@@ -105,8 +135,8 @@ ORDER BY child;
 - Ideally, the hit ratio should be greater than 90%.
 
 ````postgresql
-select sum(blks_hit) * 100 / sum(blks_hit + blks_read) as hit_ratio
-from pg_stat_database;
+SELECT sum(blks_hit) * 100 / sum(blks_hit + blks_read) AS hit_ratio
+FROM pg_stat_database;
 ````
 
 #### Anomalies
@@ -126,15 +156,14 @@ SELECT datname,
        temp_files,
        pg_size_pretty(temp_bytes)
 FROM pg_stat_database;
-
 ````
 
 #### Database Sizes
 
 ````postgresql
-select datname, pg_size_pretty(pg_database_size(datname))
-from pg_database
-order by pg_database_size(datname);
+SELECT datname, pg_size_pretty(pg_database_size(datname))
+FROM pg_database
+ORDER BY pg_database_size(datname);
 ````
 
 #### Schemas size
@@ -146,11 +175,9 @@ WITH schemas AS (
     FROM pg_tables
     GROUP BY schemaname
 ),
-
-     db AS (
-         SELECT pg_database_size(current_database()) AS size
-     )
-
+db AS (
+    SELECT pg_database_size(current_database()) AS size
+)
 SELECT schemas.name,
        pg_size_pretty(schemas.size)                      as absolute_size,
        schemas.size::float / (SELECT size FROM db) * 100 as relative_size
@@ -160,13 +187,13 @@ FROM schemas;
 #### Table Sizes
 
 ````postgresql
-select relname,
-       pg_size_pretty(pg_total_relation_size(relname::regclass))                                       as full_size,
-       pg_size_pretty(pg_relation_size(relname::regclass))                                             as table_size,
-       pg_size_pretty(pg_total_relation_size(relname::regclass) - pg_relation_size(relname::regclass)) as index_size
-from pg_stat_user_tables
-order by pg_total_relation_size(relname::regclass) desc
-limit 10;
+SELECT relname,
+       pg_size_pretty(pg_total_relation_size(relname::regclass))                                       AS full_size,
+       pg_size_pretty(pg_relation_size(relname::regclass))                                             AS table_size,
+       pg_size_pretty(pg_total_relation_size(relname::regclass) - pg_relation_size(relname::regclass)) AS index_size
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(relname::regclass) DESC
+LIMIT 10;
 ````
 
 #### Another Table Sizes Query
@@ -186,9 +213,9 @@ ORDER BY pg_total_relation_size(C.oid) DESC;
 - idx_scan should not be = 0
 
 ````postgresql
-select *
-from pg_stat_all_indexes
-where idx_scan = 0;
+SELECT *
+FROM pg_stat_all_indexes
+WHERE idx_scan = 0;
 ````
 
 #### Write Activity(index usage)
@@ -196,17 +223,17 @@ where idx_scan = 0;
 - hot_rate should be close to 100
 
 ````postgresql
-select s.relname,
+SELECT s.relname,
        pg_size_pretty(pg_relation_size(relid)),
        coalesce(n_tup_ins, 0) + 2 * coalesce(n_tup_upd, 0) - coalesce(n_tup_hot_upd, 0) +
        coalesce(n_tup_del, 0)                                                                  AS total_writes,
        (coalesce(n_tup_hot_upd, 0)::float * 100 /
-        (case when n_tup_upd > 0 then n_tup_upd else 1 end)::float)::numeric(10, 2)            AS hot_rate,
-       (select v[1] FROM regexp_matches(reloptions::text, E'fillfactor=(d+)') as r(v) limit 1) AS fillfactor
-from pg_stat_all_tables s
-         join pg_class c ON c.oid = relid
-order by total_writes desc
-limit 50;
+        (CASE WHEN n_tup_upd > 0 THEN n_tup_upd ELSE 1 END)::float)::numeric(10, 2)            AS hot_rate,
+       (SELECT v[1] FROM regexp_matches(reloptions::text, E'fillfactor=(d+)') AS r(v) LIMIT 1) AS fillfactor
+FROM pg_stat_all_tables s
+       JOIN pg_class c ON c.oid = relid
+ORDER BY total_writes DESC
+LIMIT 50;
 ````
 
 #### Does table needs an Index
@@ -243,12 +270,12 @@ FROM pg_statio_user_indexes;
 
 #### Dirty Pages
 
---  maxwritten_clean should be low - indicate that the background writer is keeping up with the cleaning process
---  buffers_backend_fsyn should be = 0
+-- maxwritten_clean should be low - indicate that the background writer is keeping up with the cleaning process
+-- buffers_backend_fsyn should be = 0
 
 ````postgresql
-select buffers_clean, maxwritten_clean, buffers_backend_fsync
-from pg_stat_bgwriter;
+SELECT buffers_clean, maxwritten_clean, buffers_backend_fsync
+FROM pg_stat_bgwriter;
 ````
 
 #### Sequential Scans
@@ -260,7 +287,7 @@ SELECT relname,
        pg_size_pretty(pg_total_relation_size(schemaname || '.' || relname)) AS size,
        seq_scan,
        seq_tup_read,
-       seq_scan / NULLIF(seq_tup_read, 0) AS seq_tup_avg
+       seq_scan / NULLIF(seq_tup_read, 0)                                   AS seq_tup_avg
 FROM pg_stat_user_tables
 WHERE seq_tup_read > 0
 ORDER BY 3, 4 DESC
@@ -270,9 +297,9 @@ LIMIT 5;
 #### Checkpoints
 
 ````postgresql
-select 'bad' as checkpoints
-from pg_stat_bgwriter
-where checkpoints_req > checkpoints_timed;
+SELECT 'bad' AS checkpoints
+FROM pg_stat_bgwriter
+WHERE checkpoints_req > checkpoints_timed;
 ````
 
 --------------
@@ -379,12 +406,12 @@ LIMIT 20;
 #### Most time consuming queries (PGSQL v9.4)
 
 ```postgresql
-SELECT substring(query, 1, 100)                                                           AS short_query,
-       make_interval(secs => total_exec_time / 1000000)                                   AS total_time,
+SELECT substring(query, 1, 100)                                                 AS short_query,
+       round(total_time::numeric, 2)                                            AS total_time,
        calls,
        rows,
-       round(total_exec_time::numeric / calls, 2)                                         AS avg_time,
-       round((100 * total_exec_time / sum(total_exec_time::numeric) OVER ())::numeric, 2) AS percentage_cpu
+       round(total_time::numeric / calls, 2)                                    AS avg_time,
+       round((100 * total_time / sum(total_time::numeric) OVER ())::numeric, 2) AS percentage_cpu
 FROM pg_stat_statements
 ORDER BY avg_time DESC
 LIMIT 20;
@@ -397,30 +424,30 @@ and, in extreme circumstances, shutdown due to transaction ID (xid) wraparound. 
 possible, ideally less than a minute.
 
 ```postgresql
-select client_addr,
+SELECT client_addr,
        usename,
        datname,
-       clock_timestamp() - xact_start  as xact_age,
-       clock_timestamp() - query_start as query_age,
+       clock_timestamp() - xact_start  AS xact_age,
+       clock_timestamp() - query_start AS query_age,
        query
-from pg_stat_activity
-order by xact_start, query_start;
+FROM pg_stat_activity
+ORDER BY xact_start, query_start;
 ```
 
 #### Bad xacts
 
 ```postgresql
-select *
-from pg_stat_activity
-where state in ('idle in transaction', 'idle in transaction (aborted)');
+SELECT *
+FROM pg_stat_activity
+WHERE state IN ('idle in transaction', 'idle in transaction (aborted)');
 ```
 
 #### Waiting Clients
 
 ```postgresql
-select *
-from pg_stat_activity
-where waiting;
+SELECT *
+FROM pg_stat_activity
+WHERE waiting;
 ```
 
 #### Waiting Connections for a lock
@@ -434,42 +461,42 @@ WHERE granted = false;
 ### Connections
 
 ```postgresql
-select client_addr, usename, datname, count(*)
-from pg_stat_activity
-group by 1, 2, 3
-order by 4 desc;
+SELECT client_addr, usename, datname, count(*)
+FROM pg_stat_activity
+GROUP BY 1, 2, 3
+ORDER BY 4 DESC;
 ```
 
 ### User Connections Ratio
 
 ```postgresql
-select count(*) * 100 / (select current_setting('max_connections')::int)
-from pg_stat_activity;
+SELECT count(*) * 100 / (SELECT current_setting('max_connections')::int)
+FROM pg_stat_activity;
 ```
 
 ### Average Statement Exec Time
 
 ```postgresql
-select (sum(total_time) / sum(calls))::numeric(6, 3)
-from pg_stat_statements;
+SELECT (sum(total_time) / sum(calls))::numeric(6, 3)
+FROM pg_stat_statements;
 ```
 
 ### Most writing (to shared_buffers) queries
 
 ```postgresql
-select query, shared_blks_dirtied
-from pg_stat_statements
-where shared_blks_dirtied > 0
-order by 2 desc;
+SELECT query, shared_blks_dirtied
+FROM pg_stat_statements
+WHERE shared_blks_dirtied > 0
+ORDER BY 2 DESC;
 ```
 
 ### Block Read Time
 
 ```postgresql
-select *
-from pg_stat_statements
-where blk_read_time <> 0
-order by blk_read_time desc;
+SELECT *
+FROM pg_stat_statements
+WHERE blk_read_time <> 0
+ORDER BY blk_read_time DESC;
 ```
 
 ```postgresql
@@ -491,9 +518,9 @@ ORDER BY blk_read_time DESC;
 ```postgresql
 SELECT schemaname, relname, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
 FROM pg_stat_user_tables
-where last_analyze is not null
-or last_autoanalyze is not null
-order by schemaname, relname;
+WHERE last_analyze IS NOT NULL
+   OR last_autoanalyze IS NOT NULL
+ORDER BY schemaname, relname;
 ```
 
 # Vacuuming
@@ -521,28 +548,26 @@ WHERE name LIKE 'autovacuum%'
 #### Last Vacuum and Analyze time
 
 ```postgresql
-select relname, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
-from pg_stat_user_tables;
+SELECT relname, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+FROM pg_stat_user_tables;
 ```
 
 #### Total number of dead tuples need to be vacuumed per table
 
 ```postgresql
-select n_dead_tup, schemaname, relname
-from pg_stat_all_tables;
+SELECT n_dead_tup, schemaname, relname FROM pg_stat_all_tables;
 ```
 
 #### Total number of dead tuples need to be vacuumed in DB
 
 ```postgresql
-select sum(n_dead_tup)
-from pg_stat_all_tables;
+SELECT sum(n_dead_tup) FROM pg_stat_all_tables;
 ```
 
 #### Show Table Bloats
 
 ```postgresql
-with foo as (
+WITH foo AS (
     SELECT schemaname,
            tablename,
            hdr,
@@ -616,27 +641,24 @@ wasted ibloat & wastedibytes: same as above, but for indexes. When you see a tab
 running VACUUM ANALYZE on it.
 
 ```postgresql
-select table_schema,
+SELECT table_schema,
        table_name,
        free_percent,
        pg_size_pretty(free_space)                    AS space_free,
        pg_size_pretty(pg_relation_size(quoted_name)) AS total_size
-from (
-         select table_schema,
-                table_name,
-                quoted_name,
-                space_stats.approx_free_percent AS free_percent,
-                space_stats.approx_free_space   AS free_space
-         from (select *,
-                      quote_ident(table_schema) || '.' || quote_ident(table_name) AS quoted_name
-               from information_schema.tables
-               where table_type = 'BASE TABLE'
-                 and table_schema not in ('information_schema', 'pg_catalog')
-                 and pg_relation_size(quote_ident(table_schema) || '.' || quote_ident(table_name)) > 100000000
-              ) t,
-              pgstattuple_approx(quoted_name) AS space_stats
-     ) t
-where free_percent > 20
+FROM (SELECT table_schema,
+             table_name,
+             quoted_name,
+             space_stats.approx_free_percent AS free_percent,
+             space_stats.approx_free_space   AS free_space
+      FROM (SELECT *,
+                   quote_ident(table_schema) || '.' || quote_ident(table_name) AS quoted_name
+            FROM information_schema.tables
+            WHERE table_type = 'BASE TABLE'
+              AND table_schema NOT IN ('information_schema', 'pg_catalog')
+              AND pg_relation_size(quote_ident(table_schema) || '.' || quote_ident(table_name)) > 100000000) t,
+           pgstattuple_approx(quoted_name) AS space_stats) t
+WHERE free_percent > 20
   AND free_space > 10000000
 ORDER BY free_space DESC;
 ```
@@ -811,4 +833,198 @@ FROM bloat_data
 WHERE (pct_bloat >= 50 AND mb_bloat >= 20)
    OR (pct_bloat >= 25 AND mb_bloat >= 1000)
 ORDER BY pct_bloat DESC;
+```
+
+```sql
+WITH constants AS (
+    -- Define constants for block size, header size, and attribute size
+    SELECT
+        current_setting('block_size')::numeric AS bs,
+        23 AS hdr,  -- header size (estimate)
+        8 AS ma     -- attribute size (estimate)
+),
+no_stats AS (
+    -- Filter out tables without statistics (such as JSON columns)
+    SELECT
+        table_schema,
+        table_name,
+        n_live_tup::numeric AS est_rows,
+        pg_table_size(relid)::numeric AS table_size
+    FROM information_schema.columns
+             JOIN pg_stat_user_tables psut
+                  ON table_schema = psut.schemaname
+                      AND table_name = psut.relname
+             LEFT JOIN pg_stats
+                       ON table_schema = pg_stats.schemaname
+                           AND table_name = pg_stats.tablename
+                           AND column_name = attname
+    WHERE attname IS NULL
+      AND table_schema NOT IN ('pg_catalog', 'information_schema')
+    GROUP BY table_schema, table_name, relid, n_live_tup
+),
+null_headers AS (
+    -- Calculate null header sizes
+    SELECT
+            hdr + 1 + (SUM(CASE WHEN null_frac <> 0 THEN 1 ELSE 0 END) / 8) AS nullhdr,
+            SUM((1 - null_frac) * avg_width) AS datawidth,
+            MAX(null_frac) AS maxfracsum,
+            schemaname,
+            tablename,
+            hdr,
+            ma,
+            bs
+    FROM pg_stats
+             CROSS JOIN constants
+             LEFT JOIN no_stats
+                       ON schemaname = no_stats.table_schema
+                           AND tablename = no_stats.table_name
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+      AND no_stats.table_name IS NULL
+    GROUP BY schemaname, tablename, hdr, ma, bs
+),
+data_headers AS (
+    -- Estimate row and header size
+    SELECT
+        ma,
+        bs,
+        hdr,
+        schemaname,
+        tablename,
+        (datawidth + (hdr + ma - (CASE WHEN hdr % ma = 0 THEN ma ELSE hdr % ma END)))::numeric AS datahdr,
+        (maxfracsum * (nullhdr + ma - (CASE WHEN nullhdr % ma = 0 THEN ma ELSE nullhdr % ma END))) AS nullhdr2
+    FROM null_headers
+),
+table_estimates AS (
+    -- Estimate the expected size of the table (based on row and page size)
+    SELECT
+        schemaname,
+        tablename,
+        bs,
+        reltuples::numeric AS est_rows,
+        relpages * bs AS table_bytes,
+        CEIL((reltuples * (datahdr + nullhdr2 + 4 + ma - (CASE WHEN datahdr % ma = 0 THEN ma ELSE datahdr % ma END))) / (bs - 20)) * bs AS expected_bytes,
+        reltoastrelid
+    FROM data_headers
+             JOIN pg_class
+                  ON tablename = relname
+             JOIN pg_namespace
+                  ON relnamespace = pg_namespace.oid
+                      AND schemaname = nspname
+    WHERE pg_class.relkind = 'r'
+),
+estimates_with_toast AS (
+    -- Add estimated TOAST table sizes (for large data types)
+    SELECT
+        schemaname,
+        tablename,
+        TRUE AS can_estimate,
+        est_rows,
+        table_bytes + (COALESCE(toast.relpages, 0) * bs) AS table_bytes,
+        expected_bytes + (CEIL(COALESCE(toast.reltuples, 0) / 4) * bs) AS expected_bytes
+    FROM table_estimates
+             LEFT JOIN pg_class AS toast
+                       ON table_estimates.reltoastrelid = toast.oid
+                           AND toast.relkind = 't'
+),
+table_estimates_plus AS (
+    -- Add extra metadata, calculate bloat bytes and format results
+    SELECT
+        current_database() AS databasename,
+        schemaname,
+        tablename,
+        can_estimate,
+        est_rows,
+        CASE WHEN table_bytes > 0 THEN table_bytes::NUMERIC ELSE NULL::NUMERIC END AS table_bytes,
+        CASE WHEN expected_bytes > 0 THEN expected_bytes::NUMERIC ELSE NULL::NUMERIC END AS expected_bytes,
+        CASE WHEN expected_bytes > 0 AND table_bytes > 0 AND expected_bytes <= table_bytes
+                 THEN (table_bytes - expected_bytes)::NUMERIC ELSE 0::NUMERIC END AS bloat_bytes
+    FROM estimates_with_toast
+    UNION ALL
+    SELECT
+        current_database() AS databasename,
+        table_schema,
+        table_name,
+        FALSE AS can_estimate,
+        est_rows,
+        table_size,
+        NULL::NUMERIC,
+        NULL::NUMERIC
+    FROM no_stats
+),
+bloat_data AS (
+    -- Final formatting and calculations
+    SELECT
+        current_database() AS databasename,
+        schemaname,
+        tablename,
+        can_estimate,
+        table_bytes,
+        ROUND(table_bytes / (1024 ^ 2)::NUMERIC, 3) AS table_mb,
+        expected_bytes,
+        ROUND(expected_bytes / (1024 ^ 2)::NUMERIC, 3) AS expected_mb,
+        ROUND(bloat_bytes * 100 / table_bytes) AS pct_bloat,
+        ROUND(bloat_bytes / (1024::NUMERIC ^ 2), 2) AS mb_bloat,
+        table_bytes,
+        expected_bytes,
+        est_rows
+    FROM table_estimates_plus
+)
+-- Select the relevant data and filter by bloat thresholds
+SELECT
+    databasename,
+    schemaname,
+    tablename,
+    can_estimate,
+    est_rows,
+    pct_bloat,
+    mb_bloat,
+    table_mb
+FROM bloat_data
+WHERE (pct_bloat >= 50 AND mb_bloat >= 20)
+   OR (pct_bloat >= 25 AND mb_bloat >= 1000)
+ORDER BY pct_bloat DESC;
+```
+
+```sql
+WITH table_sizes AS (
+    SELECT
+        full_table_name,
+        SUM(pg_total_relation_size(full_table_name)) AS total_bytes,
+        SUM(pg_total_relation_size(full_table_name) - pg_relation_size(full_table_name)) AS free_bytes
+    FROM (
+             SELECT schemaname || '.' || tablename AS full_table_name
+             FROM pg_tables
+             WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'public')
+         ) as tables
+    GROUP BY 1
+)
+SELECT
+    full_table_name,
+    ROUND((total_bytes - free_bytes) / total_bytes * 100) AS used_percent,
+    ROUND(free_bytes / total_bytes * 100) AS free_percent,
+    pg_size_pretty(total_bytes) AS total_size,
+    pg_size_pretty(free_bytes) AS free_size,
+    pg_size_pretty((total_bytes - free_bytes)) AS used_size
+FROM table_sizes
+WHERE total_bytes > 0
+ORDER BY free_bytes DESC, free_percent DESC;
+
+
+WITH table_sizes AS (
+    SELECT
+        full_table_name,
+        SUM(pg_total_relation_size(full_table_name)) AS total_bytes,
+        SUM(pg_total_relation_size(full_table_name) - pg_relation_size(full_table_name)) AS free_bytes
+    FROM (
+             SELECT schemaname || '.' || tablename AS full_table_name
+             FROM pg_tables
+             WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'public')
+         ) as tables
+    GROUP BY 1
+)
+SELECT
+    pg_size_pretty(sum(total_bytes)) AS total_size,
+    pg_size_pretty(sum(free_bytes)) AS free_size,
+    pg_size_pretty(sum(total_bytes - free_bytes)) AS used_size
+FROM table_sizes
 ```
